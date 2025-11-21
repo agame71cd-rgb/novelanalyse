@@ -44,6 +44,7 @@ export interface AppSettings {
   openaiApiKey: string;
   openaiModelName: string;
   targetChunkSize: number;
+  customPrompt?: string; // New: Allow user to override system prompt
 }
 
 // Global Graph Data Structure

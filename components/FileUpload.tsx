@@ -94,7 +94,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileLoaded, onGoToLibr
       <div className="text-center mb-12">
         <h1 className="text-5xl font-serif-read font-bold text-gray-900 mb-4 tracking-tight">NovelMind AI (小说脑)</h1>
         <p className="text-gray-600 text-lg max-w-2xl mx-auto">
-          长篇小说深度分析工具。上传您的txt小说文件 (支持百万字以上)，AI 将为您逐章拆解剧情、人物和伏笔。
+          超长篇小说深度分析工具。上传您的 txt 小说文件 (支持 1000万字以上)，AI 将为您逐章拆解剧情、人物和伏笔。
         </p>
       </div>
 
@@ -125,7 +125,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileLoaded, onGoToLibr
             <button className="px-6 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium shadow-sm">
               选择文件
             </button>
-            <p className="mt-4 text-xs text-gray-400">专为长篇内容设计 (100万字+)</p>
+            <p className="mt-4 text-xs text-gray-400">专为超长篇设计 (1000万字+)</p>
           </div>
         )}
         <input 

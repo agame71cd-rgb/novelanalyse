@@ -2,32 +2,26 @@
 import React, { useState } from 'react';
 import { Chunk, AnalysisStatus, ChatMessage, AppSettings } from '../types';
 import { analyzeChunkText, askQuestionAboutContext } from '../services/geminiService';
-import { Sparkles, Users, TrendingUp, MessageSquare, Loader2, BrainCircuit, Share2 } from 'lucide-react';
+import { Sparkles, Users, TrendingUp, MessageSquare, Loader2, BrainCircuit, Share2, Lock } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 interface AnalysisPanelProps {
   chunk: Chunk;
   settings: AppSettings;
   onAnalysisComplete: (chunkId: number, analysis: any) => void;
-  // In a real app, we might pass previous chunk data here, 
-  // but for now we will just rely on the parent or handle it simply.
-  // Ideally, App.tsx should inject the context. 
-  // However, since App.tsx controls state, let's assume the App passed a "context enriched" chunk or we fetch it differently.
-  // For simplicity in this XML update, I will update the service call below to use a placeholder or fetched context if I had access to global state.
-  // To do this correctly without prop drilling hell, I'll rely on the fact that this component triggers the action.
+  previousSummary?: string;
+  canAnalyze?: boolean; // Enforce sequential analysis
+  isAutoAnalyzing?: boolean; // State from parent
 }
 
-// Updated logic: We need the previous summary to do context-aware analysis.
-// Since we don't have global state access here easily without context API,
-// we will assume the parent component can pass the "previousSummary" as a prop if needed.
-// BUT, to keep it simple: I will modify App.tsx to pass `previousSummary` as a prop to AnalysisPanel.
-// Let's update the interface first.
-
-interface AnalysisPanelExtendedProps extends AnalysisPanelProps {
-    previousSummary?: string;
-}
-
-export const AnalysisPanel: React.FC<AnalysisPanelExtendedProps> = ({ chunk, settings, onAnalysisComplete, previousSummary }) => {
+export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ 
+    chunk, 
+    settings, 
+    onAnalysisComplete, 
+    previousSummary, 
+    canAnalyze = true,
+    isAutoAnalyzing = false
+}) => {
   const [status, setStatus] = useState<AnalysisStatus>(chunk.analysis ? AnalysisStatus.SUCCESS : AnalysisStatus.IDLE);
   const [activeTab, setActiveTab] = useState<'insights' | 'chat'>('insights');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -36,9 +30,9 @@ export const AnalysisPanel: React.FC<AnalysisPanelExtendedProps> = ({ chunk, set
 
   // Trigger analysis for current chunk
   const handleAnalyze = async () => {
+    if (!canAnalyze) return;
     setStatus(AnalysisStatus.LOADING);
     try {
-      // Now using previousSummary!
       const result = await analyzeChunkText(chunk.content, settings, previousSummary || "");
       onAnalysisComplete(chunk.id, result);
       setStatus(AnalysisStatus.SUCCESS);
@@ -73,7 +67,33 @@ export const AnalysisPanel: React.FC<AnalysisPanelExtendedProps> = ({ chunk, set
 
   // Render Methods
   const renderInsights = () => {
+    // Auto Analyzing State (Prop driven)
+    if (isAutoAnalyzing && !chunk.analysis) {
+        return (
+            <div className="flex flex-col items-center justify-center h-64">
+                <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mb-4" />
+                <p className="text-gray-600 font-medium">自动分析队列中...</p>
+                <p className="text-xs text-gray-400 mt-1">请稍候，正在分析前序章节</p>
+            </div>
+        );
+    }
+
     if (status === AnalysisStatus.IDLE) {
+        if (!canAnalyze) {
+            return (
+                <div className="flex flex-col items-center justify-center h-64 text-center p-6 border-2 border-dashed border-gray-200 rounded-xl m-4 bg-gray-50">
+                    <Lock className="w-10 h-10 text-gray-400 mb-3" />
+                    <h3 className="text-gray-600 font-medium mb-2">分析已锁定</h3>
+                    <p className="text-xs text-gray-400 leading-relaxed">
+                        为了保证剧情连贯性，AI 需要前一章的上下文记忆。请先分析上一章节。
+                    </p>
+                    <p className="text-xs text-indigo-500 mt-2 font-medium">
+                        建议使用“一键全书分析”
+                    </p>
+                </div>
+            );
+        }
+
       return (
         <div className="flex flex-col items-center justify-center h-64 text-center p-6">
           <BrainCircuit className="w-12 h-12 text-gray-300 mb-4" />

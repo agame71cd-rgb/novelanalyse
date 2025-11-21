@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Cpu, Key, CheckCircle, AlertCircle, ExternalLink, Server, Zap, Scissors } from 'lucide-react';
+import { X, Cpu, Key, CheckCircle, AlertCircle, Server, Zap, Scissors, FileEdit, RotateCcw } from 'lucide-react';
 import { AppSettings } from '../types';
+import { SYSTEM_INSTRUCTION_ANALYSIS } from '../services/geminiService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -29,6 +30,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
     model: settings.openaiModelName
   });
   const [tempChunkSize, setTempChunkSize] = useState(settings.targetChunkSize);
+  const [tempPrompt, setTempPrompt] = useState(settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS);
 
   // Update local state when settings prop changes
   useEffect(() => {
@@ -38,6 +40,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
       model: settings.openaiModelName
     });
     setTempChunkSize(settings.targetChunkSize);
+    setTempPrompt(settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS);
   }, [settings]);
 
   const geminiModels = [
@@ -72,13 +75,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
     }
   };
 
+  const handleResetPrompt = () => {
+    setTempPrompt(SYSTEM_INSTRUCTION_ANALYSIS);
+  };
+
   const handleSave = () => {
     onUpdateSettings({
       ...settings,
       openaiBaseUrl: tempOpenAISettings.baseUrl,
       openaiApiKey: tempOpenAISettings.apiKey,
       openaiModelName: tempOpenAISettings.model,
-      targetChunkSize: tempChunkSize
+      targetChunkSize: tempChunkSize,
+      customPrompt: tempPrompt
     });
     onClose();
   };
@@ -113,7 +121,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
           </button>
         </div>
 
-        <div className="p-6 space-y-8 overflow-y-auto">
+        <div className="p-6 space-y-8 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300">
           
           {/* Chunk Size Slider (Global) */}
           <div className="space-y-3">
@@ -139,6 +147,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
                     调整分段大小会重新处理当前小说。对于超长篇（1000万字+），建议设置较大数值以减少片段数量。
                 </p>
             </div>
+          </div>
+
+          <div className="h-px bg-gray-100 w-full"></div>
+
+          {/* Custom Prompt */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+                <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                  <FileEdit className="w-4 h-4 text-indigo-500" /> 自定义 AI 提示词 (System Prompt)
+                </label>
+                <button 
+                    onClick={handleResetPrompt}
+                    className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 transition-colors"
+                    title="重置为默认"
+                >
+                    <RotateCcw className="w-3 h-3" /> 重置
+                </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-2">
+                您可以修改 AI 分析的指令。请保留 "Simplified Chinese" 和对 JSON 格式的要求，否则分析可能失败。
+            </p>
+            <textarea 
+                value={tempPrompt}
+                onChange={(e) => setTempPrompt(e.target.value)}
+                className="w-full h-32 p-3 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none leading-relaxed"
+                placeholder="Enter custom system instruction..."
+            />
           </div>
 
           <div className="h-px bg-gray-100 w-full"></div>

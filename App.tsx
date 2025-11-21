@@ -8,7 +8,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { Library } from './components/Library';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { saveNewNovel, getAllNovels, loadNovel, updateNovelChunks, updateNovelSettings, deleteNovel, updateNovelProgress } from './services/storage';
-import { ChevronLeft, ChevronRight, Menu, Book, Settings, Home, Loader2, Network } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Menu, Book, Settings, Home, Loader2, Network, PlayCircle, StopCircle } from 'lucide-react';
+import { SYSTEM_INSTRUCTION_ANALYSIS, analyzeChunkText } from './services/geminiService';
 
 type ViewState = 'loading' | 'library' | 'upload' | 'reader';
 type ReaderTab = 'text' | 'graph';
@@ -32,12 +33,17 @@ const App: React.FC = () => {
       openaiApiKey: '',
       openaiModelName: 'gpt-4o',
       targetChunkSize: 50000, 
+      customPrompt: SYSTEM_INSTRUCTION_ANALYSIS,
     },
     globalGraph: { nodes: [], links: [] }
   });
   
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  
+  // Auto Analysis State
+  const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
+  const autoAnalysisRef = useRef(false);
 
   // --- Initialization ---
   useEffect(() => {
@@ -146,6 +152,8 @@ const App: React.FC = () => {
   };
 
   const handleBackToLibrary = () => {
+      // Stop analysis if running
+      stopAutoAnalysis();
       // Explicitly going back clears the auto-resume
       localStorage.removeItem('lastNovelId');
       
@@ -196,27 +204,97 @@ const App: React.FC = () => {
 
   const handleAnalysisComplete = async (chunkId: number, analysis: ChunkAnalysis) => {
     
-    let updatedGraph = appState.globalGraph;
+    // We need to use functional update to ensure we have latest graph if multiple updates happen fast
+    // But here we rely on AppState being relatively fresh.
+    // Actually, we should be careful inside the auto-loop. 
+    // Ideally we read from a ref or rely on the fact that the loop awaits this function.
 
-    // Merge new relationships if available
-    if (analysis.relationships && analysis.relationships.length > 0) {
-        updatedGraph = mergeRelationshipsIntoGraph(appState.globalGraph, analysis.relationships);
-    }
-
-    // 1. Update Local State
-    const updatedChunks = appState.chunks.map(c => c.id === chunkId ? { ...c, analysis } : c);
+    // Note: We must read the LATEST appState for the graph to prevent overwriting
+    // if user clicks around. But inside the function we only have closure state.
+    // Let's use the functional setter pattern for safety.
     
-    setAppState(prev => ({
-      ...prev,
-      chunks: updatedChunks,
-      globalGraph: updatedGraph
-    }));
+    setAppState(prevState => {
+        let updatedGraph = prevState.globalGraph;
 
-    // 2. Persist to DB
-    if (appState.currentNovelId) {
+        // Merge new relationships if available
+        if (analysis.relationships && analysis.relationships.length > 0) {
+            updatedGraph = mergeRelationshipsIntoGraph(prevState.globalGraph, analysis.relationships);
+        }
+
+        // 1. Update Local State
+        const updatedChunks = prevState.chunks.map(c => c.id === chunkId ? { ...c, analysis } : c);
+        
+        // Trigger side effect (Persist to DB) outside of this pure function? 
+        // No, we can do it after, but we need the computed values.
+        // We'll do the persistence in a useEffect or just call the DB update here with the computed values.
+        // Since setState is sync-ish in batching, we can just calculate 'updatedChunks' and 'updatedGraph' 
+        // and pass them to the DB function.
+
+        // Fire and forget DB update
         const analyzedCount = updatedChunks.filter(c => !!c.analysis).length;
-        await updateNovelChunks(appState.currentNovelId, updatedChunks, analyzedCount, updatedGraph);
+        updateNovelChunks(prevState.currentNovelId!, updatedChunks, analyzedCount, updatedGraph);
+
+        return {
+            ...prevState,
+            chunks: updatedChunks,
+            globalGraph: updatedGraph
+        };
+    });
+  };
+
+  // --- Auto Analysis Logic ---
+
+  const startAutoAnalysis = async () => {
+    if (isAutoAnalyzing) return;
+    setIsAutoAnalyzing(true);
+    autoAnalysisRef.current = true;
+
+    // Snapshot chunks to iterate
+    const chunksSnapshot = [...appState.chunks];
+    let currentSummary = "";
+
+    for (let i = 0; i < chunksSnapshot.length; i++) {
+        if (!autoAnalysisRef.current) break;
+
+        const chunk = chunksSnapshot[i];
+        
+        // If analyzed, update context and continue
+        if (chunk.analysis) {
+            currentSummary = chunk.analysis.summary;
+            continue;
+        }
+
+        // Move UI to this chunk
+        setAppState(prev => ({ ...prev, currentChunkIndex: i }));
+
+        try {
+            // Analyze
+            const result = await analyzeChunkText(chunk.content, appState.settings, currentSummary);
+            
+            // Update DB & UI
+            await handleAnalysisComplete(chunk.id, result);
+
+            // Update local loop context
+            chunk.analysis = result;
+            currentSummary = result.summary;
+
+            // Delay slightly
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+        } catch (error) {
+            console.error(`Error analyzing chunk ${i}`, error);
+            alert(`全书分析在第 ${i+1} 章中断: ${(error as Error).message}`);
+            break;
+        }
     }
+
+    setIsAutoAnalyzing(false);
+    autoAnalysisRef.current = false;
+  };
+
+  const stopAutoAnalysis = () => {
+      autoAnalysisRef.current = false;
+      setIsAutoAnalyzing(false);
   };
 
   const updateSettings = async (newSettings: AppSettings) => {
@@ -228,6 +306,9 @@ const App: React.FC = () => {
       appState.fullContent && 
       appState.settings.targetChunkSize !== newSettings.targetChunkSize
     ) {
+      // If re-segmenting, we must stop any running analysis
+      stopAutoAnalysis();
+
       const firstUnanalyzedIndex = appState.chunks.findIndex(c => !c.analysis);
       
       if (firstUnanalyzedIndex !== -1) {
@@ -322,6 +403,11 @@ const App: React.FC = () => {
     [appState.chunks, appState.currentChunkIndex]
   );
 
+  // Sequential Check:
+  // Can analyze if it's the first chunk OR previous chunk is analyzed.
+  const prevChunk = appState.currentChunkIndex > 0 ? appState.chunks[appState.currentChunkIndex - 1] : null;
+  const canAnalyze = appState.currentChunkIndex === 0 || (!!prevChunk && !!prevChunk.analysis);
+
   const readingProgress = useMemo(() => {
       if(appState.chunks.length === 0) return 0;
       return Math.round(((appState.currentChunkIndex + 1) / appState.chunks.length) * 100);
@@ -400,6 +486,28 @@ const App: React.FC = () => {
           </button>
         </div>
         
+        {/* Auto Analyze Control */}
+        <div className="p-4 border-b border-gray-800">
+            {!isAutoAnalyzing ? (
+                <button 
+                    onClick={startAutoAnalysis}
+                    className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-lg text-sm font-medium transition-all shadow-lg shadow-indigo-900/20"
+                >
+                    <PlayCircle className="w-4 h-4" /> 一键全书分析
+                </button>
+            ) : (
+                <button 
+                    onClick={stopAutoAnalysis}
+                    className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-lg text-sm font-medium transition-all animate-pulse"
+                >
+                    <StopCircle className="w-4 h-4" /> 停止分析
+                </button>
+            )}
+             <p className="text-[10px] text-gray-500 mt-2 text-center">
+                {isAutoAnalyzing ? "AI 正在逐章阅读并分析..." : "自动从第一章开始顺序分析"}
+             </p>
+        </div>
+
         <div className="p-3 border-b border-gray-800 flex gap-2">
              <button 
                 onClick={handleBackToLibrary}
@@ -541,6 +649,8 @@ const App: React.FC = () => {
                 settings={appState.settings}
                 onAnalysisComplete={handleAnalysisComplete}
                 previousSummary={getPreviousContext()}
+                canAnalyze={canAnalyze}
+                isAutoAnalyzing={isAutoAnalyzing && !currentChunk.analysis}
             />
           </div>
       )}

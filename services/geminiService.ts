@@ -4,7 +4,7 @@ import { ChunkAnalysis, AppSettings } from "../types";
 
 // --- PROMPTS ---
 
-const SYSTEM_INSTRUCTION_ANALYSIS = `
+export const SYSTEM_INSTRUCTION_ANALYSIS = `
 You are a literary analysis engine. Your job is to analyze segments of a novel.
 IMPORTANT: Output ALL content in Simplified Chinese (简体中文).
 1. Summarize the plot.
@@ -25,7 +25,7 @@ const JSON_SCHEMA_STR = `
 
 // --- HELPER: GEMINI IMPLEMENTATION ---
 
-const analyzeWithGemini = async (text: string, previousContext: string, modelName: string): Promise<ChunkAnalysis> => {
+const analyzeWithGemini = async (text: string, previousContext: string, modelName: string, systemInstruction: string): Promise<ChunkAnalysis> => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API Key is missing.");
@@ -85,7 +85,7 @@ const analyzeWithGemini = async (text: string, previousContext: string, modelNam
         ]
       },
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION_ANALYSIS,
+        systemInstruction: systemInstruction,
         responseMimeType: "application/json",
         responseSchema: responseSchema,
         temperature: 0.3,
@@ -125,7 +125,7 @@ const chatWithGemini = async (context: string, prompt: string, modelName: string
 
 // --- HELPER: OPENAI COMPATIBLE IMPLEMENTATION ---
 
-const analyzeWithOpenAI = async (text: string, previousContext: string, settings: AppSettings): Promise<ChunkAnalysis> => {
+const analyzeWithOpenAI = async (text: string, previousContext: string, settings: AppSettings, systemInstruction: string): Promise<ChunkAnalysis> => {
   if (!settings.openaiApiKey) throw new Error("OpenAI API Key is missing");
 
   const finalPrompt = previousContext 
@@ -133,7 +133,7 @@ const analyzeWithOpenAI = async (text: string, previousContext: string, settings
   : `ANALYZE THIS TEXT:\n${text}`;
 
   const messages = [
-    { role: "system", content: SYSTEM_INSTRUCTION_ANALYSIS + `\nOutput must be valid JSON matching this structure: ${JSON_SCHEMA_STR}` },
+    { role: "system", content: systemInstruction + `\nOutput must be valid JSON matching this structure: ${JSON_SCHEMA_STR}` },
     { role: "user", content: finalPrompt }
   ];
 
@@ -204,16 +204,19 @@ const chatWithOpenAI = async (context: string, question: string, settings: AppSe
 // --- EXPORTED FUNCTIONS ---
 
 export const analyzeChunkText = async (text: string, settings: AppSettings, previousSummary: string = ""): Promise<ChunkAnalysis> => {
+  // Use custom prompt if available, otherwise use default
+  const systemInstruction = settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS;
+
   try {
     if (settings.provider === 'openai') {
-      return await analyzeWithOpenAI(text, previousSummary, settings);
+      return await analyzeWithOpenAI(text, previousSummary, settings, systemInstruction);
     } else {
       try {
-        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName);
+        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
       } catch (e) {
         console.warn("First attempt failed, retrying...", e);
         await new Promise(resolve => setTimeout(resolve, 1000)); 
-        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName);
+        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
       }
     }
   } catch (error) {
