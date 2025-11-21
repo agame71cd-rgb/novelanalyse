@@ -52,7 +52,7 @@ const analyzeWithGemini = async (text: string, previousContext: string, modelNam
       },
       relationships: {
         type: Type.ARRAY,
-        description: "Relationships identified in this text segment",
+        description: "Relationships identified in this text segment. Keep names consistent with previous context if possible.",
         items: {
             type: Type.OBJECT,
             properties: {

@@ -80,18 +80,16 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileLoaded, onGoToLibr
 
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-50 p-4 relative">
-      {/* Library Navigation (Top Right) */}
-      {hasBooks && (
-          <div className="absolute top-6 right-6">
-              <button 
-                onClick={onGoToLibrary}
-                className="flex items-center gap-2 px-4 py-2 bg-white text-indigo-600 rounded-lg shadow-sm border border-indigo-100 hover:shadow-md hover:bg-indigo-50 transition-all font-medium"
-              >
-                  <Library className="w-4 h-4" />
-                  我的书架
-              </button>
-          </div>
-      )}
+      {/* Library Navigation (Top Right) - Always visible now */}
+      <div className="absolute top-6 right-6">
+          <button 
+            onClick={onGoToLibrary}
+            className="flex items-center gap-2 px-4 py-2 bg-white text-indigo-600 rounded-lg shadow-sm border border-indigo-100 hover:shadow-md hover:bg-indigo-50 transition-all font-medium"
+          >
+              <Library className="w-4 h-4" />
+              我的书架
+          </button>
+      </div>
 
       <div className="text-center mb-12">
         <h1 className="text-5xl font-serif-read font-bold text-gray-900 mb-4 tracking-tight">NovelMind AI (小说脑)</h1>

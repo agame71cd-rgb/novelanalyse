@@ -41,19 +41,36 @@ const App: React.FC = () => {
 
   // --- Initialization ---
   useEffect(() => {
-    refreshLibrary();
+    initApp();
   }, []);
 
-  const refreshLibrary = async () => {
+  const initApp = async () => {
     try {
         const novels = await getAllNovels();
         setLibraryNovels(novels);
-        if (viewState === 'loading') {
+        
+        // Auto-resume logic
+        const lastNovelId = localStorage.getItem('lastNovelId');
+        
+        if (lastNovelId && novels.some(n => n.id === lastNovelId)) {
+            // If we have a history and the book still exists, open it
+            await handleOpenNovel(lastNovelId);
+        } else {
+            // Otherwise go to library or upload
             setViewState(novels.length > 0 ? 'library' : 'upload');
         }
     } catch (e) {
         console.error("Failed to load library", e);
         setViewState('upload');
+    }
+  };
+
+  const refreshLibrary = async () => {
+    try {
+        const novels = await getAllNovels();
+        setLibraryNovels(novels);
+    } catch (e) {
+        console.error("Failed to refresh library", e);
     }
   };
 
@@ -67,6 +84,9 @@ const App: React.FC = () => {
         // Save to DB immediately
         const newId = await saveNewNovel(name, content, chunks, appState.settings);
         
+        // Set local storage for auto-resume
+        localStorage.setItem('lastNovelId', newId);
+
         setAppState(prev => ({
             ...prev,
             currentNovelId: newId,
@@ -101,16 +121,24 @@ const App: React.FC = () => {
               settings: metadata.settings,
               globalGraph: data.globalGraph || { nodes: [], links: [] }
           });
+          
+          // Save state for next reload
+          localStorage.setItem('lastNovelId', id);
+          
           setViewState('reader');
       } catch (e) {
           console.error("Failed to open novel", e);
           alert("Could not load novel.");
+          localStorage.removeItem('lastNovelId'); // Clear invalid ID
           setViewState('library');
       }
   };
 
   const handleDeleteNovel = async (id: string) => {
       await deleteNovel(id);
+      if (localStorage.getItem('lastNovelId') === id) {
+          localStorage.removeItem('lastNovelId');
+      }
       refreshLibrary();
       if (appState.currentNovelId === id) {
           setViewState('library');
@@ -118,6 +146,9 @@ const App: React.FC = () => {
   };
 
   const handleBackToLibrary = () => {
+      // Explicitly going back clears the auto-resume
+      localStorage.removeItem('lastNovelId');
+      
       refreshLibrary();
       setViewState('library');
       setReaderTab('text');
@@ -128,32 +159,35 @@ const App: React.FC = () => {
       const links = [...currentGraph.links];
 
       newRelations.forEach(rel => {
+          const sourceId = rel.source.trim();
+          const targetId = rel.target.trim();
+          
+          if (!sourceId || !targetId) return;
+
           // Add Source Node
-          if (!nodes.find(n => n.id === rel.source)) {
-              nodes.push({ id: rel.source, group: 1, value: 1 });
+          if (!nodes.find(n => n.id === sourceId)) {
+              nodes.push({ id: sourceId, group: 1, value: 1 });
           } else {
-              const n = nodes.find(x => x.id === rel.source);
+              const n = nodes.find(x => x.id === sourceId);
               if(n) n.value++;
           }
 
           // Add Target Node
-          if (!nodes.find(n => n.id === rel.target)) {
-              nodes.push({ id: rel.target, group: 1, value: 1 });
+          if (!nodes.find(n => n.id === targetId)) {
+              nodes.push({ id: targetId, group: 1, value: 1 });
           } else {
-              const n = nodes.find(x => x.id === rel.target);
+              const n = nodes.find(x => x.id === targetId);
               if(n) n.value++;
           }
 
-          // Add Link (Unique Check)
+          // Add Link (Unique Check - undirected logic for simplicity)
           const linkExists = links.find(
-              l => (l.source === rel.source && l.target === rel.target) || 
-                   (l.source === rel.target && l.target === rel.source)
+              l => (l.source === sourceId && l.target === targetId) || 
+                   (l.source === targetId && l.target === sourceId)
           );
           
           if (!linkExists) {
-              links.push({ source: rel.source, target: rel.target, label: rel.relation });
-          } else {
-              // Optional: Update label or weight?
+              links.push({ source: sourceId, target: targetId, label: rel.relation });
           }
       });
 
@@ -503,14 +537,10 @@ const App: React.FC = () => {
           <div className="hidden lg:block">
             <AnalysisPanel 
                 key={`${currentChunk.id}-${currentChunk.analysis ? 'analyzed' : 'raw'}`} 
-                chunk={{
-                    ...currentChunk, 
-                    // Hack to pass previous context implicitly via a custom prop or just rely on the service call inside.
-                    // But AnalysisPanel calls service independently.
-                    // Let's pass the previous summary down if needed, but actually the Service handles it.
-                }} 
+                chunk={currentChunk}
                 settings={appState.settings}
-                onAnalysisComplete={handleAnalysisComplete} 
+                onAnalysisComplete={handleAnalysisComplete}
+                previousSummary={getPreviousContext()}
             />
           </div>
       )}
