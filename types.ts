@@ -27,12 +27,18 @@ export interface Relationship {
   relation: string; // e.g. "friend", "enemy", "father"
 }
 
+export interface ChapterOutline {
+  title: string;
+  summary: string;
+}
+
 export interface ChunkAnalysis {
   summary: string;
   sentimentScore: number; 
   keyCharacters: CharacterProfile[];
   relationships: Relationship[]; // New: Extracted relationships from this chunk
   plotPoints: string[];
+  chapterOutlines?: ChapterOutline[]; // New: Detailed breakdown per chapter
 }
 
 export type LLMProvider = 'gemini' | 'openai';

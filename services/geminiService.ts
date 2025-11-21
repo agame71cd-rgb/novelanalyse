@@ -1,5 +1,6 @@
+
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { ChunkAnalysis, AppSettings } from "../types";
+import { ChunkAnalysis, AppSettings, ChapterOutline } from "../types";
 
 // --- PROMPTS ---
 
@@ -245,6 +246,103 @@ const chatWithOpenAI = async (context: string, question: string, settings: AppSe
   }
 };
 
+// --- HELPER: CHAPTER BREAKDOWN IMPLEMENTATION ---
+
+const generateChapterOutlinesGemini = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey: apiKey });
+  
+  const systemInstruction = `You are a novel editor. 
+  Analyze the provided text segment, which may contain multiple chapters (headers like '第x章', 'Chapter x', '序章' etc.).
+  1. Identify each distinct chapter.
+  2. Provide the specific title found.
+  3. Write a detailed summary (fine outline) for EACH chapter found.
+  4. Output in Simplified Chinese.`;
+
+  const responseSchema: Schema = {
+    type: Type.ARRAY,
+    description: "List of chapters identified in the text with summaries.",
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: "Chapter title (e.g. 第10章...)" },
+        summary: { type: Type.STRING, description: "Detailed summary of this chapter (Simplified Chinese)" }
+      },
+      required: ["title", "summary"]
+    }
+  };
+
+  const response = await retryWithBackoff(async () => {
+    return await ai.models.generateContent({
+        model: settings.geminiModelName,
+        contents: { parts: [{ text }] },
+        config: {
+            systemInstruction: systemInstruction,
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+            temperature: 0.2
+        }
+    });
+  });
+
+  const resultText = response.text;
+  if (!resultText) return [];
+  return JSON.parse(resultText) as ChapterOutline[];
+};
+
+const generateChapterOutlinesOpenAI = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
+  if (!settings.openaiApiKey) throw new Error("OpenAI API Key is missing");
+  
+  const systemInstruction = `You are a novel editor. Identify chapters in the text and provide a detailed summary for each. Output Simplified Chinese.`;
+  const schemaStr = `[ { "title": "string", "summary": "string" } ]`;
+  
+  const messages = [
+    { role: "system", content: systemInstruction + `\nOutput strictly as a JSON Array: ${schemaStr}` },
+    { role: "user", content: `TEXT:\n${text.slice(0, 80000)}` } // Limit length for OpenAI commonly lower context
+  ];
+
+  const baseUrl = settings.openaiBaseUrl.replace(/\/$/, "");
+  const url = `${baseUrl}/chat/completions`;
+
+  const callOpenAI = async () => {
+    const res = await fetch(url, {
+        method: "POST",
+        headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${settings.openaiApiKey}`
+        },
+        body: JSON.stringify({
+        model: settings.openaiModelName,
+        messages: messages,
+        temperature: 0.3,
+        response_format: { type: "json_object" } 
+        // Note: type json_object usually expects an object wrapper, not array at root. 
+        // We might need to prompt for { "chapters": [...] } to be safe but let's try flexible parsing.
+        })
+    });
+
+    if (!res.ok) throw new Error(`OpenAI API Error: ${res.status}`);
+    return res.json();
+  };
+
+  try {
+     const data = await retryWithBackoff(callOpenAI);
+     const content = data.choices?.[0]?.message?.content;
+     if(!content) return [];
+     
+     // OpenAI might wrap in an object if instructed or by default
+     const parsed = JSON.parse(content);
+     if (Array.isArray(parsed)) return parsed;
+     if (parsed.chapters && Array.isArray(parsed.chapters)) return parsed.chapters;
+     return [];
+  } catch (e) {
+      console.error("OpenAI Outline Error", e);
+      return [];
+  }
+};
+
 // --- EXPORTED FUNCTIONS ---
 
 export const analyzeChunkText = async (text: string, settings: AppSettings, previousSummary: string = ""): Promise<ChunkAnalysis> => {
@@ -285,5 +383,18 @@ export const askQuestionAboutContext = async (
   } catch (error) {
     console.error("Q&A failed:", error);
     return "抱歉，处理您的问题时遇到错误。";
+  }
+};
+
+export const generateChapterOutlines = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
+  try {
+    if (settings.provider === 'openai') {
+      return await generateChapterOutlinesOpenAI(text, settings);
+    } else {
+      return await generateChapterOutlinesGemini(text, settings);
+    }
+  } catch (e) {
+    console.error("Chapter Breakdown Failed", e);
+    throw e;
   }
 };
