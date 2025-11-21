@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ChunkAnalysis, AppSettings } from "../types";
 
@@ -22,6 +21,35 @@ const JSON_SCHEMA_STR = `
   "plotPoints": ["string"]
 }
 `;
+
+// --- HELPER: RETRY LOGIC ---
+
+const retryWithBackoff = async <T>(
+  fn: () => Promise<T>, 
+  retries: number = 3, 
+  delay: number = 2000
+): Promise<T> => {
+  try {
+    return await fn();
+  } catch (error: any) {
+    const msg = (error.message || JSON.stringify(error)).toLowerCase();
+    // Retry on network errors, 5xx server errors, or specific XHR failures (code 6 is often network/timeout)
+    const isRetriable = 
+        msg.includes("xhr error") || 
+        msg.includes("network") || 
+        msg.includes("fetch failed") || 
+        msg.includes("500") || 
+        msg.includes("503") || 
+        msg.includes("overloaded");
+
+    if (retries > 0 && isRetriable) {
+      console.warn(`Request failed with transient error. Retrying in ${delay}ms... (${retries} attempts left). Error: ${msg}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return retryWithBackoff(fn, retries - 1, delay * 2); // Exponential backoff
+    }
+    throw error;
+  }
+};
 
 // --- HELPER: GEMINI IMPLEMENTATION ---
 
@@ -77,26 +105,29 @@ const analyzeWithGemini = async (text: string, previousContext: string, modelNam
     : `TEXT TO ANALYZE:\n${text}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          { text: promptText }
-        ]
-      },
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.3,
-      }
+    // Wrap the API call in retry logic
+    const response = await retryWithBackoff(async () => {
+        return await ai.models.generateContent({
+            model: modelName,
+            contents: {
+                parts: [
+                { text: promptText }
+                ]
+            },
+            config: {
+                systemInstruction: systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+                temperature: 0.3,
+            }
+        });
     });
 
     const resultText = response.text;
     if (!resultText) throw new Error("No response text received from Gemini");
     return JSON.parse(resultText) as ChunkAnalysis;
   } catch (e: any) {
-    console.error("Gemini Analysis Error Details:", e);
+    console.error("Gemini Analysis Error Details:", JSON.stringify(e));
     throw new Error(`Gemini Analysis Failed: ${e.message || 'Unknown error'}`);
   }
 };
@@ -107,14 +138,16 @@ const chatWithGemini = async (context: string, prompt: string, modelName: string
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          { text: context },
-          { text: prompt }
-        ]
-      }
+    const response = await retryWithBackoff(async () => {
+        return await ai.models.generateContent({
+            model: modelName,
+            contents: {
+                parts: [
+                { text: context },
+                { text: prompt }
+                ]
+            }
+        });
     });
     return response.text || "无回复。";
   } catch (e) {
@@ -140,34 +173,38 @@ const analyzeWithOpenAI = async (text: string, previousContext: string, settings
   const baseUrl = settings.openaiBaseUrl.replace(/\/$/, "");
   const url = `${baseUrl}/chat/completions`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${settings.openaiApiKey}`
-    },
-    body: JSON.stringify({
-      model: settings.openaiModelName,
-      messages: messages,
-      temperature: 0.3,
-      response_format: { type: "json_object" }
-    })
-  });
+  const callOpenAI = async () => {
+    const res = await fetch(url, {
+        method: "POST",
+        headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${settings.openaiApiKey}`
+        },
+        body: JSON.stringify({
+        model: settings.openaiModelName,
+        messages: messages,
+        temperature: 0.3,
+        response_format: { type: "json_object" }
+        })
+    });
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenAI API Error: ${res.status} - ${err}`);
-  }
-
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content;
-  
-  if (!content) throw new Error("Empty response from OpenAI");
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`OpenAI API Error: ${res.status} - ${err}`);
+    }
+    return res.json();
+  };
 
   try {
-    return JSON.parse(content) as ChunkAnalysis;
+      const data = await retryWithBackoff(callOpenAI);
+      const content = data.choices?.[0]?.message?.content;
+      
+      if (!content) throw new Error("Empty response from OpenAI");
+
+      return JSON.parse(content) as ChunkAnalysis;
   } catch (e) {
-    throw new Error("Failed to parse JSON from OpenAI response");
+      console.error("OpenAI Analysis Failed", e);
+      throw new Error("Failed to parse JSON from OpenAI response or API error");
   }
 };
 
@@ -182,23 +219,30 @@ const chatWithOpenAI = async (context: string, question: string, settings: AppSe
   const baseUrl = settings.openaiBaseUrl.replace(/\/$/, "");
   const url = `${baseUrl}/chat/completions`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${settings.openaiApiKey}`
-    },
-    body: JSON.stringify({
-      model: settings.openaiModelName,
-      messages: messages,
-      temperature: 0.7
-    })
-  });
+  const callOpenAI = async () => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${settings.openaiApiKey}`
+        },
+        body: JSON.stringify({
+        model: settings.openaiModelName,
+        messages: messages,
+        temperature: 0.7
+        })
+    });
 
-  if (!res.ok) throw new Error(`OpenAI API Error: ${res.status}`);
+    if (!res.ok) throw new Error(`OpenAI API Error: ${res.status}`);
+    return res.json();
+  }
 
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || "无回复。";
+  try {
+    const data = await retryWithBackoff(callOpenAI);
+    return data.choices?.[0]?.message?.content || "无回复。";
+  } catch (e) {
+      return "OpenAI Chat Error";
+  }
 };
 
 // --- EXPORTED FUNCTIONS ---
@@ -211,16 +255,10 @@ export const analyzeChunkText = async (text: string, settings: AppSettings, prev
     if (settings.provider === 'openai') {
       return await analyzeWithOpenAI(text, previousSummary, settings, systemInstruction);
     } else {
-      try {
-        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
-      } catch (e) {
-        console.warn("First attempt failed, retrying...", e);
-        await new Promise(resolve => setTimeout(resolve, 1000)); 
-        return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
-      }
+      return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
     }
   } catch (error) {
-    console.error("Analysis failed:", error);
+    console.error("Analysis failed final:", error);
     throw error;
   }
 };

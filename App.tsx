@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { processFileContent } from './utils/textProcessing';
 import { GlobalState, ChunkAnalysis, AppSettings, NovelMetadata, GlobalGraph, Relationship } from './types';
@@ -32,7 +31,7 @@ const App: React.FC = () => {
       openaiBaseUrl: 'https://api.openai.com/v1',
       openaiApiKey: '',
       openaiModelName: 'gpt-4o',
-      targetChunkSize: 50000, 
+      targetChunkSize: 30000, // Reduced default to improve stability (was 50000)
       customPrompt: SYSTEM_INSTRUCTION_ANALYSIS,
     },
     globalGraph: { nodes: [], links: [] }
@@ -237,39 +236,28 @@ const App: React.FC = () => {
     // We iterate through chunks. 
     // CRITICAL: We must maintain the context (summary) chain.
     // Since we run in background, we maintain a local `runningSummary`.
-    // We initialize `runningSummary` from the last analyzed chunk before the first unanalyzed one.
     
-    let chunksToAnalyze = [...appState.chunks];
     let runningSummary = "";
 
-    // Find the first chunk index that needs analysis to set initial context properly
-    // But we loop from start to end to ensure context chain is correct.
+    // We assume chunks are ordered by ID.
+    const chunksToAnalyze = [...appState.chunks];
     
-    for (let i = 0; i < chunksToAnalyze.length; i++) {
+    // Find the last analyzed chunk to pick up context
+    let startIndex = 0;
+    for(let i = 0; i < chunksToAnalyze.length; i++) {
+        if(chunksToAnalyze[i].analysis) {
+            runningSummary = chunksToAnalyze[i].analysis!.summary;
+        } else {
+            startIndex = i;
+            break;
+        }
+    }
+    
+    for (let i = startIndex; i < chunksToAnalyze.length; i++) {
         if (!autoAnalysisRef.current) break;
-
-        // We must check the *fresh* state in case something changed, but effectively we trust the loop order.
-        // However, to support pausing/resuming, we need to handle chunks that are already done.
-        
-        // Since appState.chunks changes when handleAnalysisComplete fires, 
-        // 'chunksToAnalyze[i]' might be stale regarding 'analysis' property if we don't check freshly.
-        // But since we are the only ones modifying analysis sequentially in this mode...
-        
-        // Check if this specific chunk is already analyzed in our snapshot OR in current state?
-        // Simpler: Just check the chunk from state.
-        // We can't easily access fresh state inside loop without ref or functional update.
-        // So we will maintain local status.
 
         const chunk = chunksToAnalyze[i];
         
-        // If already analyzed, just update context and continue
-        // Note: We check if it HAS analysis. 
-        if (chunk.analysis) {
-            runningSummary = chunk.analysis.summary;
-            continue;
-        }
-
-        // If not analyzed, we analyze it using `runningSummary` (which is the summary of i-1)
         try {
             // NOTE: We do NOT change setAppState.currentChunkIndex here. 
             // This allows the user to read other chapters while analysis runs in background.
@@ -288,9 +276,12 @@ const App: React.FC = () => {
 
         } catch (error) {
             console.error(`Error analyzing chunk ${i}`, error);
-            // Don't alert if stopped manually
+            // Retry loop handling inside analyzeChunkText handles network glitches. 
+            // If it bubbles up here, it's likely a hard failure or stopped.
             if (autoAnalysisRef.current) {
-                 alert(`全书分析在第 ${i+1} 章中断: ${(error as Error).message}`);
+                 const errorMsg = (error as any).message || "Unknown error";
+                 alert(`全书分析在第 ${i+1} 章 (${chunk.title}) 中断: ${errorMsg}\n请检查网络连接或重试。`);
+                 stopAutoAnalysis();
             }
             break;
         }
