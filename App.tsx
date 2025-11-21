@@ -204,15 +204,6 @@ const App: React.FC = () => {
 
   const handleAnalysisComplete = async (chunkId: number, analysis: ChunkAnalysis) => {
     
-    // We need to use functional update to ensure we have latest graph if multiple updates happen fast
-    // But here we rely on AppState being relatively fresh.
-    // Actually, we should be careful inside the auto-loop. 
-    // Ideally we read from a ref or rely on the fact that the loop awaits this function.
-
-    // Note: We must read the LATEST appState for the graph to prevent overwriting
-    // if user clicks around. But inside the function we only have closure state.
-    // Let's use the functional setter pattern for safety.
-    
     setAppState(prevState => {
         let updatedGraph = prevState.globalGraph;
 
@@ -224,13 +215,7 @@ const App: React.FC = () => {
         // 1. Update Local State
         const updatedChunks = prevState.chunks.map(c => c.id === chunkId ? { ...c, analysis } : c);
         
-        // Trigger side effect (Persist to DB) outside of this pure function? 
-        // No, we can do it after, but we need the computed values.
-        // We'll do the persistence in a useEffect or just call the DB update here with the computed values.
-        // Since setState is sync-ish in batching, we can just calculate 'updatedChunks' and 'updatedGraph' 
-        // and pass them to the DB function.
-
-        // Fire and forget DB update
+        // Fire and forget DB update with correct values
         const analyzedCount = updatedChunks.filter(c => !!c.analysis).length;
         updateNovelChunks(prevState.currentNovelId!, updatedChunks, analyzedCount, updatedGraph);
 
@@ -249,41 +234,64 @@ const App: React.FC = () => {
     setIsAutoAnalyzing(true);
     autoAnalysisRef.current = true;
 
-    // Snapshot chunks to iterate
-    const chunksSnapshot = [...appState.chunks];
-    let currentSummary = "";
+    // We iterate through chunks. 
+    // CRITICAL: We must maintain the context (summary) chain.
+    // Since we run in background, we maintain a local `runningSummary`.
+    // We initialize `runningSummary` from the last analyzed chunk before the first unanalyzed one.
+    
+    let chunksToAnalyze = [...appState.chunks];
+    let runningSummary = "";
 
-    for (let i = 0; i < chunksSnapshot.length; i++) {
+    // Find the first chunk index that needs analysis to set initial context properly
+    // But we loop from start to end to ensure context chain is correct.
+    
+    for (let i = 0; i < chunksToAnalyze.length; i++) {
         if (!autoAnalysisRef.current) break;
 
-        const chunk = chunksSnapshot[i];
+        // We must check the *fresh* state in case something changed, but effectively we trust the loop order.
+        // However, to support pausing/resuming, we need to handle chunks that are already done.
         
-        // If analyzed, update context and continue
+        // Since appState.chunks changes when handleAnalysisComplete fires, 
+        // 'chunksToAnalyze[i]' might be stale regarding 'analysis' property if we don't check freshly.
+        // But since we are the only ones modifying analysis sequentially in this mode...
+        
+        // Check if this specific chunk is already analyzed in our snapshot OR in current state?
+        // Simpler: Just check the chunk from state.
+        // We can't easily access fresh state inside loop without ref or functional update.
+        // So we will maintain local status.
+
+        const chunk = chunksToAnalyze[i];
+        
+        // If already analyzed, just update context and continue
+        // Note: We check if it HAS analysis. 
         if (chunk.analysis) {
-            currentSummary = chunk.analysis.summary;
+            runningSummary = chunk.analysis.summary;
             continue;
         }
 
-        // Move UI to this chunk
-        setAppState(prev => ({ ...prev, currentChunkIndex: i }));
-
+        // If not analyzed, we analyze it using `runningSummary` (which is the summary of i-1)
         try {
-            // Analyze
-            const result = await analyzeChunkText(chunk.content, appState.settings, currentSummary);
+            // NOTE: We do NOT change setAppState.currentChunkIndex here. 
+            // This allows the user to read other chapters while analysis runs in background.
             
-            // Update DB & UI
+            const result = await analyzeChunkText(chunk.content, appState.settings, runningSummary);
+            
+            // Update DB & UI State
             await handleAnalysisComplete(chunk.id, result);
 
-            // Update local loop context
-            chunk.analysis = result;
-            currentSummary = result.summary;
+            // Update local loop variables
+            chunk.analysis = result; // Update local snapshot so next iteration sees it
+            runningSummary = result.summary;
 
-            // Delay slightly
+            // Small delay to breathe
             await new Promise(resolve => setTimeout(resolve, 500));
 
         } catch (error) {
             console.error(`Error analyzing chunk ${i}`, error);
-            alert(`全书分析在第 ${i+1} 章中断: ${(error as Error).message}`);
+            // Don't alert if stopped manually
+            if (autoAnalysisRef.current) {
+                 alert(`全书分析在第 ${i+1} 章中断: ${(error as Error).message}`);
+            }
             break;
         }
     }
@@ -487,7 +495,7 @@ const App: React.FC = () => {
         </div>
         
         {/* Auto Analyze Control */}
-        <div className="p-4 border-b border-gray-800">
+        <div className="p-4 border-b border-gray-800 bg-gray-900/50">
             {!isAutoAnalyzing ? (
                 <button 
                     onClick={startAutoAnalysis}
@@ -504,7 +512,7 @@ const App: React.FC = () => {
                 </button>
             )}
              <p className="text-[10px] text-gray-500 mt-2 text-center">
-                {isAutoAnalyzing ? "AI 正在逐章阅读并分析..." : "自动从第一章开始顺序分析"}
+                {isAutoAnalyzing ? "AI 正在后台逐章分析..." : "自动从第一章开始顺序分析"}
              </p>
         </div>
 
@@ -528,14 +536,16 @@ const App: React.FC = () => {
                         : 'border-transparent text-gray-400'
                     }`}
                 >
-                    <div className="font-medium">{chunk.title}</div>
+                    <div className="flex justify-between items-start">
+                        <div className="font-medium truncate pr-2">{chunk.title}</div>
+                        {chunk.analysis && (
+                             <div className="flex-shrink-0 w-2 h-2 rounded-full bg-green-500 mt-1.5 shadow-[0_0_5px_rgba(34,197,94,0.6)]" title="已分析"></div>
+                        )}
+                    </div>
                     <div className="flex items-center justify-between mt-1">
                         <span className="text-[10px] text-gray-600">
                             {chunk.startIndex.toLocaleString()} - {chunk.endIndex.toLocaleString()}
                         </span>
-                        {chunk.analysis && (
-                            <div className="w-2 h-2 rounded-full bg-green-500" title="已分析"></div>
-                        )}
                     </div>
                 </button>
             ))}

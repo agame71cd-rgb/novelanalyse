@@ -171,7 +171,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
             <textarea 
                 value={tempPrompt}
                 onChange={(e) => setTempPrompt(e.target.value)}
-                className="w-full h-32 p-3 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none leading-relaxed"
+                className="w-full h-32 p-3 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none leading-relaxed resize-y"
                 placeholder="Enter custom system instruction..."
             />
           </div>

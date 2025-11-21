@@ -73,7 +73,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
             <div className="flex flex-col items-center justify-center h-64">
                 <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mb-4" />
                 <p className="text-gray-600 font-medium">自动分析队列中...</p>
-                <p className="text-xs text-gray-400 mt-1">请稍候，正在分析前序章节</p>
+                <p className="text-xs text-gray-400 mt-1">请稍候，正在后台分析前序章节</p>
             </div>
         );
     }
@@ -88,7 +88,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                         为了保证剧情连贯性，AI 需要前一章的上下文记忆。请先分析上一章节。
                     </p>
                     <p className="text-xs text-indigo-500 mt-2 font-medium">
-                        建议使用“一键全书分析”
+                        建议使用左侧的“一键全书分析”
                     </p>
                 </div>
             );
