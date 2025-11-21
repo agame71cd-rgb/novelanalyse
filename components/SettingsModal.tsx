@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Cpu, Key, CheckCircle, AlertCircle, Server, Zap, Scissors, FileEdit, RotateCcw } from 'lucide-react';
+import { X, Cpu, Key, CheckCircle, AlertCircle, Server, Zap, Scissors, FileEdit, RotateCcw, Maximize2 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { SYSTEM_INSTRUCTION_ANALYSIS } from '../services/geminiService';
 
@@ -30,6 +30,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
     model: settings.openaiModelName
   });
   const [tempChunkSize, setTempChunkSize] = useState(settings.targetChunkSize);
+  const [tempMaxTokens, setTempMaxTokens] = useState(settings.maxOutputTokens || 16384);
   const [tempPrompt, setTempPrompt] = useState(settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS);
 
   // Update local state when settings prop changes
@@ -40,6 +41,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
       model: settings.openaiModelName
     });
     setTempChunkSize(settings.targetChunkSize);
+    setTempMaxTokens(settings.maxOutputTokens || 16384);
     setTempPrompt(settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS);
   }, [settings]);
 
@@ -86,6 +88,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
       openaiApiKey: tempOpenAISettings.apiKey,
       openaiModelName: tempOpenAISettings.model,
       targetChunkSize: tempChunkSize,
+      maxOutputTokens: tempMaxTokens,
       customPrompt: tempPrompt
     });
     onClose();
@@ -126,13 +129,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
           {/* Chunk Size Slider (Global) */}
           <div className="space-y-3">
             <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-              <Scissors className="w-4 h-4 text-indigo-500" /> 分段大小设置
+              <Scissors className="w-4 h-4 text-indigo-500" /> 分段大小设置 (Input Chunks)
             </label>
             <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
                 <div className="flex justify-between mb-2">
-                    <span className="text-xs text-gray-500">最小 3万字</span>
+                    <span className="text-xs text-gray-500">3万字</span>
                     <span className="text-sm font-bold text-indigo-700">{tempChunkSize.toLocaleString()} 字 / 段</span>
-                    <span className="text-xs text-gray-500">最大 50万字</span>
+                    <span className="text-xs text-gray-500">50万字</span>
                 </div>
                 <input 
                     type="range" 
@@ -143,8 +146,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
                     onChange={(e) => setTempChunkSize(Number(e.target.value))}
                     className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
                 />
+            </div>
+          </div>
+          
+          {/* Max Output Tokens Slider (New) */}
+          <div className="space-y-3">
+             <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+              <Maximize2 className="w-4 h-4 text-indigo-500" /> 最大输出长度 (Max Output Tokens)
+            </label>
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <div className="flex justify-between mb-2">
+                    <span className="text-xs text-gray-500">4k</span>
+                    <span className="text-sm font-bold text-indigo-700">{tempMaxTokens.toLocaleString()} Tokens</span>
+                    <span className="text-xs text-gray-500">64k</span>
+                </div>
+                <input 
+                    type="range" 
+                    min="4096" 
+                    max="65536" 
+                    step="4096" 
+                    value={tempMaxTokens}
+                    onChange={(e) => setTempMaxTokens(Number(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
                 <p className="text-xs text-gray-500 mt-2">
-                    调整分段大小会重新处理当前小说。对于超长篇（1000万字+），建议设置较大数值以减少片段数量。
+                    控制 AI 回复的最大长度。如果细纲生成不完全，请尝试调大此数值 (建议 16k+)。
                 </p>
             </div>
           </div>

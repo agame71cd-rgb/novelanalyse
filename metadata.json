@@ -1,5 +1,5 @@
 {
-  "name": "Copy of NovelMind - Long Form Text Analysis",
-  "description": "A specialized tool for analyzing massively long novels (10M+ characters) using Gemini. Features chunk-based reading, character tracking, context-aware Q&A, and full-book auto-analysis.",
+  "name": "NovelMind - 10M+ Word Analyzer",
+  "description": "A specialized tool for analyzing massively long novels (10M+ characters) using Gemini. Features chunk-based reading, character tracking, context-aware Q&A, and optimized large-scale knowledge graphs.",
   "requestFramePermissions": []
 }

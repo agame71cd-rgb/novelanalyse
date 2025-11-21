@@ -51,6 +51,7 @@ export interface AppSettings {
   openaiModelName: string;
   targetChunkSize: number;
   customPrompt?: string; // New: Allow user to override system prompt
+  maxOutputTokens: number; // New: Control output length
 }
 
 // Global Graph Data Structure

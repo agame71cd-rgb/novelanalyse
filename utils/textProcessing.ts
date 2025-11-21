@@ -4,7 +4,7 @@ import { Chunk } from '../types';
 // Regex to identify common novel chapter headers
 // Matches start of line (or file), optional whitespace, then patterns like "第1章", "Chapter 1", "序章"
 // Uses (?:^|\n) to ensure we match start of lines.
-const CHAPTER_REGEX = /(?:^|\n)\s*(?:第\s*[0-9零一二三四五六七八九十百千]+\s*[章回节卷]|Chapter\s*\d+|序章|引子|尾声)(?:[^\n]*)/g;
+export const CHAPTER_REGEX = /(?:^|\n)\s*(?:第\s*[0-9零一二三四五六七八九十百千]+\s*[章回节卷]|Chapter\s*\d+|序章|引子|尾声)(?:[^\n]*)/g;
 
 // Helper to split large text blocks simply by length (fallback or sub-splitting)
 const splitByLength = (text: string, targetChunkSize: number, absoluteStartOffset = 0, startIdIndex = 0, baseTitlePrefix = ""): Chunk[] => {
@@ -55,6 +55,54 @@ const splitByLength = (text: string, targetChunkSize: number, absoluteStartOffse
     localIndex++;
   }
   return chunks;
+};
+
+export const splitTextIntoChapters = (text: string): { title: string; content: string }[] => {
+  const matches = [...text.matchAll(CHAPTER_REGEX)];
+  
+  // If no chapters found, return the whole text as one "chapter" (or fragment)
+  if (matches.length === 0) {
+    return [{ title: "Fragment", content: text }];
+  }
+
+  const results: { title: string; content: string }[] = [];
+  
+  // Handle pre-chapter text (Prologue or Front Matter without header)
+  if (matches[0].index && matches[0].index > 0) {
+    results.push({
+      title: "Front Matter",
+      content: text.slice(0, matches[0].index).trim()
+    });
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const currentMatch = matches[i];
+    const nextMatch = matches[i + 1];
+    
+    const start = currentMatch.index!;
+    // The regex match includes the title line, so we keep it in content usually? 
+    // Or we separate title. Let's keep title separate but include it in content context if needed.
+    // Ideally, content is the body.
+    
+    // Let's extract the title cleanly
+    const titleLine = currentMatch[0].trim();
+    
+    // The content starts AFTER the match, or we include the match?
+    // Usually better to include the title in the content for LLM context, 
+    // but here we want to list titles.
+    
+    const contentStart = start + currentMatch[0].length;
+    const contentEnd = nextMatch ? nextMatch.index! : text.length;
+    
+    const body = text.slice(contentStart, contentEnd).trim();
+    
+    results.push({
+      title: titleLine,
+      content: body
+    });
+  }
+
+  return results.filter(r => r.content.length > 0); // Filter empty chapters
 };
 
 export const processFileContent = (content: string, targetChunkSize: number): Chunk[] => {

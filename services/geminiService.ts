@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ChunkAnalysis, AppSettings, ChapterOutline } from "../types";
+import { splitTextIntoChapters } from "../utils/textProcessing";
 
 // --- PROMPTS ---
 
@@ -23,30 +24,59 @@ const JSON_SCHEMA_STR = `
 }
 `;
 
+// --- HELPER: ROBUST JSON PARSER ---
+
+const safeParseJSONArray = (str: string): any[] => {
+  if (!str) return [];
+  // Remove markdown code blocks if present
+  let clean = str.replace(/```json/g, '').replace(/```/g, '').trim();
+  
+  try {
+    return JSON.parse(clean);
+  } catch (e) {
+    console.warn("JSON parse failed, attempting repair for array...");
+    const start = clean.indexOf('[');
+    if (start === -1) return [];
+    const lastObjEnd = clean.lastIndexOf('}');
+    if (lastObjEnd === -1) return [];
+    const repaired = clean.slice(start, lastObjEnd + 1) + ']';
+    try {
+        const parsed = JSON.parse(repaired);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e2) {
+        console.error("JSON repair failed", e2);
+        return [];
+    }
+  }
+};
+
 // --- HELPER: RETRY LOGIC ---
 
 const retryWithBackoff = async <T>(
   fn: () => Promise<T>, 
-  retries: number = 3, 
+  retries: number = 5, 
   delay: number = 2000
 ): Promise<T> => {
   try {
     return await fn();
   } catch (error: any) {
-    const msg = (error.message || JSON.stringify(error)).toLowerCase();
-    // Retry on network errors, 5xx server errors, or specific XHR failures (code 6 is often network/timeout)
+    const errStr = JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase();
+    const msg = (error.message || "").toLowerCase();
+    
     const isRetriable = 
         msg.includes("xhr error") || 
         msg.includes("network") || 
         msg.includes("fetch failed") || 
         msg.includes("500") || 
         msg.includes("503") || 
-        msg.includes("overloaded");
+        msg.includes("overloaded") ||
+        errStr.includes("error code: 6") ||
+        errStr.includes("rpc failed");
 
     if (retries > 0 && isRetriable) {
-      console.warn(`Request failed with transient error. Retrying in ${delay}ms... (${retries} attempts left). Error: ${msg}`);
+      console.warn(`Request failed (Attempt ${6 - retries}). Retrying in ${delay}ms... Error: ${msg}`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return retryWithBackoff(fn, retries - 1, delay * 2); // Exponential backoff
+      return retryWithBackoff(fn, retries - 1, delay * 2);
     }
     throw error;
   }
@@ -54,7 +84,7 @@ const retryWithBackoff = async <T>(
 
 // --- HELPER: GEMINI IMPLEMENTATION ---
 
-const analyzeWithGemini = async (text: string, previousContext: string, modelName: string, systemInstruction: string): Promise<ChunkAnalysis> => {
+const analyzeWithGemini = async (text: string, previousContext: string, modelName: string, systemInstruction: string, maxOutputTokens?: number): Promise<ChunkAnalysis> => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API Key is missing.");
@@ -100,13 +130,13 @@ const analyzeWithGemini = async (text: string, previousContext: string, modelNam
     required: ["summary", "sentimentScore", "keyCharacters", "plotPoints", "relationships"]
   };
 
-  // Construct Prompt with Memory
   const promptText = previousContext 
     ? `PREVIOUS STORY CONTEXT (Use this to understand who characters are, but ONLY analyze the NEW TEXT):\n${previousContext}\n\nNEW TEXT TO ANALYZE:\n${text}`
     : `TEXT TO ANALYZE:\n${text}`;
 
+  console.log(`[Gemini Request] Analyzing chunk with model ${modelName}. Token Limit: ${maxOutputTokens || 8192}. Length: ${text.length} chars.`);
+
   try {
-    // Wrap the API call in retry logic
     const response = await retryWithBackoff(async () => {
         return await ai.models.generateContent({
             model: modelName,
@@ -120,12 +150,14 @@ const analyzeWithGemini = async (text: string, previousContext: string, modelNam
                 responseMimeType: "application/json",
                 responseSchema: responseSchema,
                 temperature: 0.3,
+                maxOutputTokens: maxOutputTokens || 8192,
             }
         });
-    });
+    }, 5, 2000); 
 
     const resultText = response.text;
     if (!resultText) throw new Error("No response text received from Gemini");
+    
     return JSON.parse(resultText) as ChunkAnalysis;
   } catch (e: any) {
     console.error("Gemini Analysis Error Details:", JSON.stringify(e));
@@ -185,6 +217,7 @@ const analyzeWithOpenAI = async (text: string, previousContext: string, settings
         model: settings.openaiModelName,
         messages: messages,
         temperature: 0.3,
+        max_tokens: settings.maxOutputTokens || 16384,
         response_format: { type: "json_object" }
         })
     });
@@ -199,13 +232,11 @@ const analyzeWithOpenAI = async (text: string, previousContext: string, settings
   try {
       const data = await retryWithBackoff(callOpenAI);
       const content = data.choices?.[0]?.message?.content;
-      
       if (!content) throw new Error("Empty response from OpenAI");
-
       return JSON.parse(content) as ChunkAnalysis;
   } catch (e) {
       console.error("OpenAI Analysis Failed", e);
-      throw new Error("Failed to parse JSON from OpenAI response or API error");
+      throw e;
   }
 };
 
@@ -248,27 +279,86 @@ const chatWithOpenAI = async (context: string, question: string, settings: AppSe
 
 // --- HELPER: CHAPTER BREAKDOWN IMPLEMENTATION ---
 
+const summarizeSingleChapterGemini = async (title: string, text: string, settings: AppSettings): Promise<ChapterOutline> => {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) throw new Error("API Key is missing.");
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+    
+    const systemInstruction = `You are a novel editor. Summarize the provided chapter in Simplified Chinese.
+    Chapter Title: ${title}
+    Output JSON: { "title": "${title}", "summary": "string" }`;
+
+    const responseSchema: Schema = {
+        type: Type.OBJECT,
+        properties: {
+            title: { type: Type.STRING },
+            summary: { type: Type.STRING, description: "Detailed summary" }
+        },
+        required: ["title", "summary"]
+    };
+
+    const response = await retryWithBackoff(async () => {
+        return await ai.models.generateContent({
+            model: settings.geminiModelName,
+            contents: { parts: [{ text }] },
+            config: {
+                systemInstruction: systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+                maxOutputTokens: 4096 
+            }
+        });
+    });
+    
+    const json = JSON.parse(response.text || "{}");
+    return { title: title, summary: json.summary || "Summary failed." };
+};
+
 const generateChapterOutlinesGemini = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
+  // 1. Use Regex to split content into chapters locally.
+  const chapters = splitTextIntoChapters(text);
+  
+  console.log(`[Gemini Outline] Found ${chapters.length} chapters in chunk via regex.`);
+
+  // If multiple chapters found, summarize them individually
+  if (chapters.length > 0) {
+      const results: ChapterOutline[] = [];
+      // Process in batches of 3 to allow some concurrency but respect limits
+      for (let i = 0; i < chapters.length; i += 3) {
+          const batch = chapters.slice(i, i + 3);
+          try {
+            const batchResults = await Promise.all(batch.map(ch => 
+                summarizeSingleChapterGemini(ch.title, ch.content, settings).catch(e => ({
+                    title: ch.title,
+                    summary: `Error summarizing: ${e.message}`
+                }))
+            ));
+            results.push(...batchResults);
+          } catch (e) {
+            console.error("Batch summary failed", e);
+          }
+      }
+      return results;
+  }
+
+  // Fallback: If no specific chapters found (e.g. just text), treat as one block
   const apiKey = process.env.API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const systemInstruction = `You are a novel editor. 
-  Analyze the provided text segment, which may contain multiple chapters (headers like '第x章', 'Chapter x', '序章' etc.).
-  1. Identify each distinct chapter.
-  2. Provide the specific title found.
-  3. Write a detailed summary (fine outline) for EACH chapter found.
-  4. Output in Simplified Chinese.`;
+  Analyze the provided text segment.
+  1. Identify any implied chapters or just summarize the segment if no header exists.
+  2. Output in Simplified Chinese.`;
 
   const responseSchema: Schema = {
     type: Type.ARRAY,
-    description: "List of chapters identified in the text with summaries.",
     items: {
       type: Type.OBJECT,
       properties: {
-        title: { type: Type.STRING, description: "Chapter title (e.g. 第10章...)" },
-        summary: { type: Type.STRING, description: "Detailed summary of this chapter (Simplified Chinese)" }
+        title: { type: Type.STRING, description: "Chapter title" },
+        summary: { type: Type.STRING, description: "Detailed summary" }
       },
       required: ["title", "summary"]
     }
@@ -282,78 +372,21 @@ const generateChapterOutlinesGemini = async (text: string, settings: AppSettings
             systemInstruction: systemInstruction,
             responseMimeType: "application/json",
             responseSchema: responseSchema,
-            temperature: 0.2
+            maxOutputTokens: settings.maxOutputTokens || 16384 
         }
     });
   });
 
-  const resultText = response.text;
-  if (!resultText) return [];
-  return JSON.parse(resultText) as ChapterOutline[];
+  return safeParseJSONArray(response.text || "");
 };
-
-const generateChapterOutlinesOpenAI = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
-  if (!settings.openaiApiKey) throw new Error("OpenAI API Key is missing");
-  
-  const systemInstruction = `You are a novel editor. Identify chapters in the text and provide a detailed summary for each. Output Simplified Chinese.`;
-  const schemaStr = `[ { "title": "string", "summary": "string" } ]`;
-  
-  const messages = [
-    { role: "system", content: systemInstruction + `\nOutput strictly as a JSON Array: ${schemaStr}` },
-    { role: "user", content: `TEXT:\n${text.slice(0, 80000)}` } // Limit length for OpenAI commonly lower context
-  ];
-
-  const baseUrl = settings.openaiBaseUrl.replace(/\/$/, "");
-  const url = `${baseUrl}/chat/completions`;
-
-  const callOpenAI = async () => {
-    const res = await fetch(url, {
-        method: "POST",
-        headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${settings.openaiApiKey}`
-        },
-        body: JSON.stringify({
-        model: settings.openaiModelName,
-        messages: messages,
-        temperature: 0.3,
-        response_format: { type: "json_object" } 
-        // Note: type json_object usually expects an object wrapper, not array at root. 
-        // We might need to prompt for { "chapters": [...] } to be safe but let's try flexible parsing.
-        })
-    });
-
-    if (!res.ok) throw new Error(`OpenAI API Error: ${res.status}`);
-    return res.json();
-  };
-
-  try {
-     const data = await retryWithBackoff(callOpenAI);
-     const content = data.choices?.[0]?.message?.content;
-     if(!content) return [];
-     
-     // OpenAI might wrap in an object if instructed or by default
-     const parsed = JSON.parse(content);
-     if (Array.isArray(parsed)) return parsed;
-     if (parsed.chapters && Array.isArray(parsed.chapters)) return parsed.chapters;
-     return [];
-  } catch (e) {
-      console.error("OpenAI Outline Error", e);
-      return [];
-  }
-};
-
-// --- EXPORTED FUNCTIONS ---
 
 export const analyzeChunkText = async (text: string, settings: AppSettings, previousSummary: string = ""): Promise<ChunkAnalysis> => {
-  // Use custom prompt if available, otherwise use default
   const systemInstruction = settings.customPrompt || SYSTEM_INSTRUCTION_ANALYSIS;
-
   try {
     if (settings.provider === 'openai') {
       return await analyzeWithOpenAI(text, previousSummary, settings, systemInstruction);
     } else {
-      return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction);
+      return await analyzeWithGemini(text, previousSummary, settings.geminiModelName, systemInstruction, settings.maxOutputTokens);
     }
   } catch (error) {
     console.error("Analysis failed final:", error);
@@ -367,12 +400,10 @@ export const askQuestionAboutContext = async (
   settings: AppSettings,
   previousSummary?: string
 ): Promise<string> => {
-  
   const context = `
     ${previousSummary ? `PREVIOUS CONTEXT SUMMARY:\n${previousSummary}\n\n` : ''}
     CURRENT TEXT SEGMENT:\n${currentChunkText}
   `;
-
   try {
     if (settings.provider === 'openai') {
       return await chatWithOpenAI(context, question, settings);
@@ -381,7 +412,6 @@ export const askQuestionAboutContext = async (
       return await chatWithGemini(context, prompt, settings.geminiModelName);
     }
   } catch (error) {
-    console.error("Q&A failed:", error);
     return "抱歉，处理您的问题时遇到错误。";
   }
 };
@@ -389,9 +419,9 @@ export const askQuestionAboutContext = async (
 export const generateChapterOutlines = async (text: string, settings: AppSettings): Promise<ChapterOutline[]> => {
   try {
     if (settings.provider === 'openai') {
-      return await generateChapterOutlinesOpenAI(text, settings);
+       return await generateChapterOutlinesGemini(text, settings); 
     } else {
-      return await generateChapterOutlinesGemini(text, settings);
+       return await generateChapterOutlinesGemini(text, settings);
     }
   } catch (e) {
     console.error("Chapter Breakdown Failed", e);

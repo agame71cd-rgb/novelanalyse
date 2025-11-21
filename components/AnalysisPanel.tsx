@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Chunk, AnalysisStatus, ChatMessage, AppSettings, ChapterOutline } from '../types';
 import { analyzeChunkText, askQuestionAboutContext, generateChapterOutlines } from '../services/geminiService';
-import { Sparkles, Users, TrendingUp, MessageSquare, Loader2, BrainCircuit, Share2, Lock, RotateCcw, CheckCircle, FileType, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { Sparkles, Users, TrendingUp, MessageSquare, Loader2, BrainCircuit, Share2, Lock, RotateCcw, CheckCircle, FileType, ChevronDown, ChevronUp, Eye, RefreshCw, ArrowRightCircle, Play } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 interface AnalysisPanelProps {
@@ -34,7 +34,9 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
   // Trigger analysis for current chunk
   const handleAnalyze = async () => {
-    if (!canAnalyze) return;
+    // If already analyzed, we can regenerate without checking sequential lock strictly for previous chunks
+    if (!canAnalyze && !chunk.analysis) return; 
+    
     setStatus(AnalysisStatus.LOADING);
     try {
       const result = await analyzeChunkText(chunk.content, settings, previousSummary || "");
@@ -56,6 +58,22 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
       } catch (e) {
           alert("生成章节细纲失败，请重试。");
           console.error(e);
+      } finally {
+          setIsOutlining(false);
+      }
+  };
+
+  const handleRegenerateOutlines = async () => {
+      if (!chunk.analysis) return;
+      if (!window.confirm("确定要重新生成细纲吗？这将覆盖当前的细纲列表。")) return;
+      
+      setIsOutlining(true);
+      try {
+          const outlines = await generateChapterOutlines(chunk.content, settings);
+          const updatedAnalysis = { ...chunk.analysis, chapterOutlines: outlines };
+          onAnalysisComplete(chunk.id, updatedAnalysis);
+      } catch (e) {
+          alert("重新生成细纲失败。");
       } finally {
           setIsOutlining(false);
       }
@@ -189,19 +207,17 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                <CheckCircle className="w-3 h-3" /> 分析已完成
             </div>
             
-            {canAnalyze && (
-                 <button 
-                   onClick={() => {
-                      if(window.confirm('重新分析将覆盖当前结果，且可能影响后续章节的连贯性（如果后续已分析）。确定要重新生成吗？')) {
-                          handleAnalyze();
-                      }
-                   }} 
-                   className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-all"
-                   title="重新分析此章节"
-                 >
-                     <RotateCcw className="w-3.5 h-3.5" /> 重新生成
-                 </button>
-            )}
+            <button 
+               onClick={() => {
+                  if(window.confirm('重新分析将覆盖当前结果，且可能影响后续章节的连贯性。确定要重新生成吗？')) {
+                      handleAnalyze();
+                  }
+               }} 
+               className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-all"
+               title="重新分析此章节"
+            >
+                 <RotateCcw className="w-3.5 h-3.5" /> 重新生成
+            </button>
         </div>
 
         {/* Previous Context Toggle (Visible even after analysis) */}
@@ -232,14 +248,27 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
         {/* Chapter Outlines (Detailed Breakdown) */}
         <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                <FileType className="w-4 h-4" /> 章节细纲 (逐章)
-            </h3>
+            <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                    <FileType className="w-4 h-4" /> 章节细纲 (逐章)
+                </h3>
+                {data.chapterOutlines && (
+                    <button 
+                        onClick={handleRegenerateOutlines}
+                        disabled={isOutlining}
+                        className="flex items-center gap-1 px-2 py-1 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-all text-[10px] font-medium disabled:opacity-50"
+                        title="重新生成细纲"
+                    >
+                        {isOutlining ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        重做
+                    </button>
+                )}
+            </div>
             
             {!data.chapterOutlines ? (
                 <div className="bg-white p-4 rounded-xl border border-dashed border-gray-300 text-center">
                     <p className="text-xs text-gray-500 mb-3">
-                        本片段可能包含多个章节。生成逐章细纲可获得更详细的剧情拆解。
+                        尚未生成逐章细纲。请使用左侧侧边栏的“生成全书细纲”功能。
                     </p>
                     <button 
                         onClick={handleGenerateOutlines}
@@ -249,12 +278,12 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                         {isOutlining ? (
                             <> <Loader2 className="w-3 h-3 animate-spin" /> 生成中... </>
                         ) : (
-                            <> <Sparkles className="w-3 h-3" /> 生成章节细纲 </>
+                            <> <Sparkles className="w-3 h-3" /> 仅生成本段细纲 </>
                         )}
                     </button>
                 </div>
             ) : (
-                <div className="space-y-3">
+                <div className="space-y-3 animate-fadeIn">
                     {data.chapterOutlines.map((outline, idx) => (
                         <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
                             <h4 className="font-bold text-gray-800 text-xs mb-1 flex items-center gap-2">
